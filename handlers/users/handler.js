@@ -3,8 +3,8 @@ import logger from '../../services/logger.js'
 /**
  * Получение рекомендаций по добавленным тегам игрока
  * */
-export async function getUserRecommendationByTags(req, reply) {
-    const funcName = 'getUserRecommendationByTags';
+export async function getUserRecommendation(req, reply) {
+    const funcName = 'getUserRecommendation';
 
     try {
         const fastify = req.server;
@@ -56,5 +56,5 @@ export async function getUserRecommendationByTags(req, reply) {
 }
 
 export default {
-    getUserRecommendationByTags
+    getUserRecommendation
 }

@@ -11,6 +11,6 @@ export default async function (fastify) {
                 required: ['userId']
             }
         },
-        handler: handler.getUserRecommendationByTags
+        handler: handler.getUserRecommendation
     });
 }
