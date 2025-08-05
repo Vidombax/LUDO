@@ -9,6 +9,10 @@ export async function getUserRecommendationByTags(req, reply) {
     try {
         const fastify = req.server;
         const { userId } = req.params;
+        const cacheKey = `rec-user:${userId}`;
+
+        const cached = await fastify.redis.get(cacheKey);
+        if (cached) return reply.send({ games: JSON.parse(cached) });
 
         const client = await fastify.pg;
 
@@ -37,10 +41,14 @@ export async function getUserRecommendationByTags(req, reply) {
             [genreIds]
         );
 
-        return reply.status(200).send({ recommendations: games });
+        await fastify.redis.set(cacheKey, JSON.stringify(games), 'EX', 1800).then(() => {
+            logger.info(`${funcName}: записали в редис под ${cacheKey}`);
+        });
+
+        return reply.status(200).send({ games });
     }
     catch (e) {
-        logger.error(`Ошибка в ${funcName}:`, e);
+        logger.error(`${funcName}:`, e);
         return reply.status(500).send({
             error: 'Ошибка на стороне сервера',
         });
