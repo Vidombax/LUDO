@@ -1,17 +1,15 @@
 import handler from '../../handlers/users/handler.js'
 
-export default async function (fastify, options) {
-    fastify.route({
-        method: 'GET',
-        url: '/recommend/:userId',
+export default async function (fastify) {
+    fastify.get('/recommend/:userId', {
         schema: {
             params: {
                 type: 'object',
                 properties: {
                     userId: { type: 'number' }
                 },
-                required: ['userId'],
-            },
+                required: ['userId']
+            }
         },
         handler: handler.getUserRecommendationByTags
     });
