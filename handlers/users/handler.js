@@ -4,13 +4,16 @@ import logger from '../../services/logger.js'
  * Получение рекомендаций по добавленным тегам игрока
  * */
 export async function getUserRecommendationByTags(req, reply) {
+    const funcName = 'getUserRecommendationByTags';
+
     try {
         const fastify = req.server;
         const { userId } = req.params;
 
         const client = await fastify.pg;
 
-        const preferences = await client.query(
+
+        const { rows: preferences } = await client.query(
             'SELECT id_genre, weight FROM genre_preferences WHERE id_user = $1',
             [userId]
         );
@@ -19,10 +22,25 @@ export async function getUserRecommendationByTags(req, reply) {
             return reply.status(404).send({ message: 'Не найдено предпочтений у пользователя, пожалуйста выберите категории, которые могут быть вам интересны' });
         }
 
-        return reply.status(200).send(user.rows);
+        const genreIds = preferences.map(p => p.id_genre);
+        const { rows: games } = await client.query(
+            `
+                SELECT gam.id_game, gam.name, array_agg(gen.name) as genre_names, COUNT(gt.id_genre) AS match_score 
+                FROM games gam 
+                JOIN genre_to_game gt ON gam.id_game = gt.id_game
+                JOIN genres gen on gen.id_genre = gt.id_genre
+                WHERE gt.id_genre = ANY($1::int[])
+                GROUP BY gam.id_game
+                ORDER BY match_score DESC 
+                LIMIT 10
+            `,
+            [genreIds]
+        );
+
+        return reply.status(200).send({ recommendations: games });
     }
     catch (e) {
-        logger.error(e);
+        logger.error(`Ошибка в ${funcName}:`, e);
         return reply.status(500).send({
             error: 'Ошибка на стороне сервера',
         });
