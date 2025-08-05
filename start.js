@@ -14,7 +14,7 @@ const fastify = Fastify({
 });
 
 fastify.register(await import ('@fastify/postgres'), {
-    connectionString: `${process.env.CONNECTION_STRING}`
+    connectionString: `${process.env.DATABASE_URL}`
 }).then(() => {
     logger.info('Соединение с базой установлено');
 });
