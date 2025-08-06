@@ -28,7 +28,6 @@ function buildUserClipScores(interactions, ACTION_WEIGHTS) {
  */
 function popularityScoresNormalized(clips, interactions, now, ACTION_WEIGHTS) {
     const raw = clips.map(c => {
-        // вместо _.sum используем reduce — надежно в любо окружении
         const score = interactions
             .filter(i => i.clipId === c.id)
             .map(i => {
