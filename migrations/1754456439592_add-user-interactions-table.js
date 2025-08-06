@@ -28,6 +28,11 @@ export const up = (pgm) => {
             type: 'integer',
             notNull: true,
             comment: 'Время просмотра'
+        },
+        ts: {
+            type: 'date',
+            notNull: true,
+            comment: 'Актуальность действия'
         }
     }, {
         ifNotExists: true
