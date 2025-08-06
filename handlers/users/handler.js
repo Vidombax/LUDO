@@ -1,10 +1,13 @@
+import * as _ from 'lodash'
+import utils from './utils/utils.js'
 import logger from '../../services/logger.js'
 
 /**
  * Получение рекомендаций по добавленным тегам игрока
  * */
-export async function getUserRecommendation(req, reply) {
+async function getUserRecommendation(req, reply) {
     const funcName = 'getUserRecommendation';
+    const client = await req.server.pg.connect();
 
     try {
         const fastify = req.server;
@@ -12,9 +15,12 @@ export async function getUserRecommendation(req, reply) {
         const cacheKey = `rec-user:${userId}`;
 
         const cached = await fastify.redis.get(cacheKey);
-        if (cached) return reply.send({ games: JSON.parse(cached) });
+        if (cached) {
+            client.release();
+            return reply.send({ games: JSON.parse(cached) });
+        }
 
-        const client = await fastify.pg;
+        await client.query('BEGIN');
 
 
         const { rows: preferences } = await client.query(
@@ -23,6 +29,8 @@ export async function getUserRecommendation(req, reply) {
         );
 
         if (preferences.length === 0) {
+            await client.query('ROLLBACK');
+            client.release();
             return reply.status(404).send({ message: 'Не найдено предпочтений у пользователя, пожалуйста выберите категории, которые могут быть вам интересны' });
         }
 
@@ -45,13 +53,18 @@ export async function getUserRecommendation(req, reply) {
             logger.info(`${funcName}: записали в редис под ${cacheKey}`);
         });
 
+        await client.query('COMMIT');
         return reply.status(200).send({ games });
     }
     catch (e) {
+        await client.query('ROLLBACK');
         logger.error(`${funcName}:`, e);
         return reply.status(500).send({
             error: 'Ошибка на стороне сервера',
         });
+    }
+    finally {
+        client.release();
     }
 }
 
