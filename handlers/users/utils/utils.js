@@ -1,45 +1,59 @@
 import * as _ from 'lodash'
 import * as ss from 'simple-statistics'
+import { ACTION_IDS } from '../../../services/constants.js'
 
 /**
  * Строит матрицу "пользователь — клип" с накопленными весами действий.
+ * @param {Array} interactions - Список взаимодействий {userId, clipId, actionId, ts, watch_time}.
+ * @param {Object} ACTION_WEIGHTS - Словарь весов для actionId.
+ * @returns {Object} scores[userId][clipId] = number
  */
 function buildUserClipScores(interactions, ACTION_WEIGHTS) {
     const scores = {};
     interactions.forEach(it => {
         scores[it.userId] = scores[it.userId] || {};
-        scores[it.userId][it.clipId] = (scores[it.userId][it.clipId] || 0) + (ACTION_WEIGHTS[it.action] || 0);
+        scores[it.userId][it.clipId] = (scores[it.userId][it.clipId] || 0) + (ACTION_WEIGHTS[it.actionId] || 0);
     });
     return scores;
 }
 
 /**
- * Рассчитывает "популярность" клипа с учетом затухания по времени.
- * Возвращает нормализованное значение (0–1) по всем клипам.
+ * Рассчитывает "сырые" популярностные баллы с учётом time decay для каждого клипа,
+ * затем нормализует в диапазон 0..1 по всем clips.
+ *
+ * @param {Array} clips - список клипов
+ * @param {Array} interactions - логи взаимодействий
+ * @param {number} now - текущее время (ms)
+ * @param {Object} ACTION_WEIGHTS - веса по actionId
+ * @returns {Object} { clipId: normalizedScore }
  */
 function popularityScoresNormalized(clips, interactions, now, ACTION_WEIGHTS) {
-    const rawScores = clips.map(c => {
+    const raw = clips.map(c => {
         const score = _.sum(interactions.filter(i => i.clipId === c.id).map(i => {
             const ageHours = (now - i.ts) / (1000 * 60 * 60);
-            const timeDecay = Math.exp(-ageHours / 72);
-            const w = ACTION_WEIGHTS[i.action] || 0;
-            return Math.max(0, w) * timeDecay;
+            const timeDecay = Math.exp(-ageHours / 72); // экспоненциальное затухание (3 дня)
+            const w = ACTION_WEIGHTS[i.actionId] || 0;
+            return Math.max(0, w) * timeDecay; // учитываем только положительные вклады
         }));
         return { id: c.id, score };
     });
 
-    const values = rawScores.map(r => r.score);
-    const min = ss.min(values);
-    const max = ss.max(values);
+    const values = raw.map(r => r.score);
+    const min = values.length ? ss.min(values) : 0;
+    const max = values.length ? ss.max(values) : 0;
+    const denom = (max - min) || 1;
 
-    return rawScores.reduce((acc, { id, score }) => {
-        acc[id] = (score - min) / (max - min || 1);
+    return raw.reduce((acc, { id, score }) => {
+        acc[id] = (score - min) / denom;
         return acc;
     }, {});
 }
 
 /**
- * Совпадение тегов пользователя и клипа.
+ * Рассчитывает совпадение тегов клипа с интересами пользователя (0..1).
+ * @param {string[]} clipTags
+ * @param {string[]} userTags
+ * @returns {number}
  */
 function tagMatchScore(clipTags, userTags){
     if(!userTags || userTags.length === 0) return 0;
@@ -48,16 +62,27 @@ function tagMatchScore(clipTags, userTags){
 }
 
 /**
- * Бонус за активность друзей.
+ * Бонус от активности друзей (логарифмически).
+ * Считает уникальных друзей, которые лайкнули/сохранили/поделились клипом.
+ * @param {string} clipId
+ * @param {string} targetUser
+ * @param {Array} interactions
+ * @param {Object} friends
+ * @returns {number}
  */
 function friendBoost(clipId, targetUser, interactions, friends){
     const myFriends = friends[targetUser] || [];
-    const count = _.uniq(interactions.filter(i => myFriends.includes(i.userId) && i.clipId === clipId && (i.action === 'like' || i.action === 'save' || i.action === 'share')).map(i => i.userId)).length;
+    const positiveActions = [ACTION_IDS.LIKE, ACTION_IDS.SAVE, ACTION_IDS.SHARE];
+    const count = _.uniq(interactions
+        .filter(i => myFriends.includes(i.userId) && i.clipId === clipId && positiveActions.includes(i.actionId))
+        .map(i => i.userId)).length;
     return Math.log(1 + count);
 }
 
 /**
- * Бонус за новизну клипа.
+ * Новизна клипа (множитель).
+ * @param {Object} clip
+ * @returns {number}
  */
 function recencyBoost(clip){
     const ageDays = (Date.now() - clip.createdAt)/(1000 * 60 * 60 * 24);
@@ -67,30 +92,42 @@ function recencyBoost(clip){
 }
 
 /**
- * Бонус/штраф за время просмотра относительно медианы по жанрам.
+ * Watch time boost:
+ * - сравнивает watch_time конкретного пользователя для клипа с медианой watch_time по жанру (genre = первый тег)
+ * - использует simple-statistics.median
+ *
+ * Возвращает:
+ *   0.4 — если пользователь смотрел заметно дольше медианы по жанру (ratio >= 1.2)
+ *   0.1 — если близко к медиане (0.8 <= ratio < 1.2)
+ *  -0.2 — если существенно меньше (ratio < 0.8)
+ *
+ * @param {string} clipId
+ * @param {string} targetUser
+ * @param {Array} interactions
+ * @param {Array} clips
+ * @returns {number}
  */
 function watchTimeBoost(clipId, targetUser, interactions, clips){
     const clip = clips.find(c => c.id === clipId);
     if(!clip) return 0;
 
-    // находим все клипы того же жанра
-    const genre = clip.tags[0];
-    const genreClipsIds = clips.filter(c => c.tags.includes(genre)).map(c => c.id);
+    const primaryGenre = clip.tags && clip.tags[0];
+    if(!primaryGenre) return 0;
 
-    // собираем времена просмотра по жанру
+    const genreClipIds = clips.filter(c => c.tags && c.tags.includes(primaryGenre)).map(c => c.id);
+
     const genreWatchTimes = interactions
-        .filter(i => genreClipsIds.includes(i.clipId) && i.watch_time != null)
+        .filter(i => genreClipIds.includes(i.clipId) && typeof i.watch_time === 'number')
         .map(i => i.watch_time);
 
     if(genreWatchTimes.length === 0) return 0;
 
-    const medianGenreTime = ss.median(genreWatchTimes);
+    const medianGenre = ss.median(genreWatchTimes);
 
-    // время просмотра этого клипа конкретным пользователем
-    const entry = interactions.find(i => i.userId === targetUser && i.clipId === clipId && i.watch_time != null);
+    const entry = interactions.find(i => i.userId === targetUser && i.clipId === clipId && typeof i.watch_time === 'number');
     if(!entry) return 0;
 
-    const ratio = entry.watch_time / medianGenreTime;
+    const ratio = entry.watch_time / (medianGenre || 1);
     if(ratio >= 1.2) return 0.4;
     if(ratio >= 0.8) return 0.1;
     return -0.2;
@@ -98,6 +135,7 @@ function watchTimeBoost(clipId, targetUser, interactions, clips){
 
 /**
  * Определяем сколько дней прошло с нынешнего момента
+ * @param {number} n - кол-во минут
  */
 function daysAgo(n) {
     return Date.now() - n * 24 * 60 * 60 * 1000;
